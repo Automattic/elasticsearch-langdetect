@@ -11,15 +11,11 @@ import java.util.*;
 import java.util.regex.Pattern;
 
 public class LangdetectService {
-
+    private final static long RANDOM_SEED = 0;
     private final static ESLogger logger = ESLoggerFactory.getLogger(LangdetectService.class.getName());
-
     private final Settings settings;
-
     private final static Pattern word = Pattern.compile("[\\P{IsWord}]", Pattern.UNICODE_CHARACTER_CLASS);
-
     public final static String[] DEFAULT_LANGUAGES = new String[] {
-           // "af",
             "ar",
             "bg",
             "bn",
@@ -41,14 +37,11 @@ public class LangdetectService {
             "id",
             "it",
             "ja",
-           // "kn",
             "ko",
             "lt",
             "lv",
             "mk",
             "ml",
-           // "mr",
-           // "ne",
             "nl",
             "no",
             "pa",
@@ -56,12 +49,8 @@ public class LangdetectService {
             "pt",
             "ro",
             "ru",
-           // "sk",
-            //"sl",
-           // "so",
             "sq",
             "sv",
-           // "sw",
             "ta",
             "te",
             "th",
@@ -73,58 +62,66 @@ public class LangdetectService {
             "zh-cn",
             "zh-tw"
     };
-
     private final static Settings DEFAULT_SETTINGS = Settings.builder()
             .putArray("languages", DEFAULT_LANGUAGES)
             .build();
 
     private Map<String, double[]> wordLangProbMap = new HashMap<>();
-
     private List<String> langlist = new LinkedList<>();
-
     private Map<String,String> langmap = new HashMap<>();
 
-    private String profile;
+    private final String profileParam;
+    private final double alpha;
+    private final double alphaWidth;
+    private final int numTrials;
+    private final int iterationLimit;
+    private final double probThreshold;
+    private final double convThreshold;
+    private final int baseFreq;
+    private final Pattern filterPattern;
 
-    private double alpha;
-
-    private double alpha_width;
-
-    private int n_trial;
-
-    private double[] priorMap;
-
-    private int iteration_limit;
-
-    private double prob_threshold;
-
-    private double conv_threshold;
-
-    private int base_freq;
-
-    private Pattern filterPattern;
-
-    private boolean isStarted;
-
+    /**
+     * Create a service with the default settings.
+     */
     public LangdetectService() {
         this(DEFAULT_SETTINGS);
     }
 
+    /**
+     * Create a service with the given settings and the default language profile. 
+     */
     public LangdetectService(Settings settings) {
         this(settings, null);
     }
 
-    public LangdetectService(Settings settings, String profile) {
+    /**
+     * Create a service with the given settings and language profile (null or "short-text").
+     */
+    public LangdetectService(Settings settings, String profileParam) {
         this.settings = settings;
-        this.profile = settings.get("profile", profile) ;
+        this.profileParam = settings.get("profile", profileParam) ;
         load(settings);
-        init();
+        this.numTrials = settings.getAsInt("number_of_trials", 7);
+        this.alpha = settings.getAsDouble("alpha", 0.5);
+        this.alphaWidth = settings.getAsDouble("alpha_width", 0.05);
+        this.iterationLimit = settings.getAsInt("iteration_limit", 10000);
+        this.probThreshold = settings.getAsDouble("prob_threshold", 0.1);
+        this.convThreshold = settings.getAsDouble("conv_threshold",  0.99999);
+        this.baseFreq = settings.getAsInt("base_freq", 10000);
+        this.filterPattern = settings.get("pattern") != null ?
+                                 Pattern.compile(settings.get("pattern"), Pattern.UNICODE_CHARACTER_CLASS) : null;
     }
 
+    /**
+     * Return the settings used to create this service. 
+     */
     public Settings getSettings() {
         return settings;
     }
 
+    /**
+     * Populate this service's fields according to the given settings.  
+     */
     private void load(Settings settings) {
         if (settings.equals(Settings.EMPTY)) {
             return;
@@ -135,16 +132,15 @@ public class LangdetectService {
                 keys = settings.get("languages").split(",");
             }
             int index = 0;
-            int size = keys.length;
             for (String key : keys) {
                 if (key != null && !key.isEmpty()) {
-                    loadProfileFromResource(key, index++, size);
+                    addProfile(loadProfileFromResource(key), index++, keys.length);
                 }
             }
             logger.debug("language detection service installed for {}", langlist);
         } catch (Exception e) {
             logger.error(e.getMessage(), e);
-            throw new ElasticsearchException(e.getMessage() + " profile=" + profile);
+            throw new ElasticsearchException(e.getMessage() + " profile=" + profileParam);
         }
         try {
             // map by settings
@@ -154,11 +150,13 @@ public class LangdetectService {
             }
             if (map.getAsMap().isEmpty()) {
                 // is in "map" a resource name?
-                String s = settings.get("map") != null ?
-                        settings.get("map") : this.profile + "language.json";
-                InputStream in = getClass().getResourceAsStream(s);
+                String mapResource = settings.get("map");
+                if (mapResource == null) {
+                    mapResource = "language.json";
+                }
+                InputStream in = getClass().getResourceAsStream(mapResource);
                 if (in != null) {
-                    map = Settings.settingsBuilder().loadFromStream(s, in).build();
+                    map = Settings.settingsBuilder().loadFromStream(mapResource, in).build();
                 }
             }
             this.langmap = map.getAsMap();
@@ -168,166 +166,147 @@ public class LangdetectService {
         }
     }
 
-    private void init() {
-        this.priorMap = null;
-        this.n_trial = settings.getAsInt("number_of_trials", 7);
-        this.alpha = settings.getAsDouble("alpha", 0.5);
-        this.alpha_width = settings.getAsDouble("alpha_width", 0.05);
-        this.iteration_limit = settings.getAsInt("iteration_limit", 10000);
-        this.prob_threshold = settings.getAsDouble("prob_threshold", 0.1);
-        this.conv_threshold = settings.getAsDouble("conv_threshold",  0.99999);
-        this.base_freq = settings.getAsInt("base_freq", 10000);
-        this.filterPattern = settings.get("pattern") != null ?
-                Pattern.compile(settings.get("pattern"),Pattern.UNICODE_CHARACTER_CLASS) : null;
-        isStarted = true;
-    }
-
-    public void loadProfileFromResource(String resource,  int index, int langsize) throws IOException {
-        String profile = "/langdetect/" + (this.profile != null ? this.profile + "/" : "");
-        InputStream in = getClass().getResourceAsStream(profile + resource);
+    /**
+     * Load a language profile from a resource file.
+     */
+    private LangProfile loadProfileFromResource(String lang) throws IOException {
+        StringBuilder profilePath = new StringBuilder("/langdetect/");
+        if (profileParam != null) {
+            profilePath.append(profileParam).append('/');
+        }
+        InputStream in = getClass().getResourceAsStream(profilePath.append(lang).toString());
         if (in == null) {
-            throw new IOException("profile '" + resource + "' not found");
+            throw new IOException("profile '" + lang + "' not found");
         }
         LangProfile langProfile = new LangProfile();
         langProfile.read(in);
-        addProfile(langProfile, index, langsize);
+        return langProfile;
     }
 
-    public void addProfile(LangProfile profile, int index, int langsize) throws IOException {
+    /**
+     * Add a language profile to this service.
+     *
+     * Note: This method should probably not be public as it requires callers to know the inner workings of this class.
+     *       Use at your own risk!
+     */
+    public void addProfile(LangProfile profile, int profileIndex, int numLanguages) throws IOException {
         String lang = profile.getName();
         if (langlist.contains(lang)) {
             throw new IOException("duplicate of the same language profile: " + lang);
         }
         langlist.add(lang);
-        for (String word : profile.getFreq().keySet()) {
+        List<Integer> profileNWords = profile.getNWords();
+        for (Map.Entry<String, Integer> entry : profile.getFreq().entrySet()) {
+            String word = entry.getKey();
+            int len = word.length();
+            if (len < 1 || len > NGram.N_GRAM) {
+                continue;
+            }
             if (!wordLangProbMap.containsKey(word)) {
-                wordLangProbMap.put(word, new double[langsize]);
+                wordLangProbMap.put(word, new double[numLanguages]);
             }
-            int length = word.length();
-            if (length >= 1 && length <= 3) {
-                double prob = profile.getFreq().get(word).doubleValue() / profile.getNWords().get(length - 1);
-                wordLangProbMap.get(word)[index] = prob;
-            }
+            wordLangProbMap.get(word)[profileIndex] = entry.getValue().doubleValue() / profileNWords.get(len - 1);
         }
     }
 
-    public String getProfile() {
-        return profile;
-    }
-
+    /**
+     * Detect the languages in the text, returning a list of languages sorted in descending order of probability.
+     */
     public List<Language> detectAll(String text) throws LanguageDetectionException {
-        if (!isStarted) {
-            load(settings);
-            init();
-        }
-        List<Language> languages = new ArrayList<>();
         if (filterPattern != null && !filterPattern.matcher(text).matches()) {
-            return languages;
+            return Collections.emptyList();
         }
-        List<String> list = new ArrayList<>();
-        languages = sortProbability(languages, detectBlock(list, text));
+        List<Language> languages = convertProbabilitiesToLanguages(detectProbabilities(text));
         return languages.subList(0, Math.min(languages.size(), settings.getAsInt("max", languages.size())));
     }
 
-    private double[] detectBlock(List<String> list, String text) throws LanguageDetectionException {
-        // clean all non-work characters from text
+    /**
+     * Return an array representing the probability distribution of the text's language.
+     */
+    private double[] detectProbabilities(String text) throws LanguageDetectionException {
+        // clean all non-word characters from text
         text = text.replaceAll(word.pattern(), " ");
-        extractNGrams(list, text);
-        double[] langprob = new double[langlist.size()];
-        if (list.isEmpty()) {
-            //throw new LanguageDetectionException("no features in text");
-            return langprob;
+        List<String> ngrams = extractNGrams(text);
+        double[] overallProbs = new double[langlist.size()];
+        if (ngrams.isEmpty()) {
+            return overallProbs;
         }
-        Random rand = new Random();
-        Long seed = 0L;
-        rand.setSeed(seed);
-        for (int t = 0; t < n_trial; ++t) {
-            double[] prob = initProbability();
-            double a = this.alpha + rand.nextGaussian() * alpha_width;
+        Random rand = new Random(RANDOM_SEED);
+        for (int t = 0; t < numTrials; ++t) {
+            double[] trialProbs = new double[langlist.size()];
+            Arrays.fill(trialProbs, 1.0 / langlist.size());
+            double weight = (alpha + rand.nextGaussian() * alphaWidth) / baseFreq;
             for (int i = 0; ; ++i) {
-                int r = rand.nextInt(list.size());
-                updateLangProb(prob, list.get(r), a);
-                if (i % 5 == 0) {
-                    if (normalizeProb(prob) > conv_threshold || i >= iteration_limit) {
-                        break;
-                    }
+                double[] langProbMap = wordLangProbMap.get(ngrams.get(rand.nextInt(ngrams.size())));
+                for (int j = 0; j < trialProbs.length; ++j) {
+                    trialProbs[j] *= weight + langProbMap[j];
+                }
+                if (i % 5 == 0 && (normalizeProbabilities(trialProbs) > convThreshold || i >= iterationLimit)) {
+                    break;
                 }
             }
-            for (int j = 0; j < langprob.length; ++j) {
-                langprob[j] += prob[j] / n_trial;
+            for (int j = 0; j < overallProbs.length; ++j) {
+                overallProbs[j] += trialProbs[j] / numTrials;
             }
         }
-        return langprob;
+        return overallProbs;
     }
 
-    private double[] initProbability() {
-        double[] prob = new double[langlist.size()];
-        if (priorMap != null) {
-            System.arraycopy(priorMap, 0, prob, 0, prob.length);
-        } else {
-            for (int i = 0; i < prob.length; ++i) {
-                prob[i] = 1.0 / langlist.size();
-            }
-        }
-        return prob;
-    }
-
-    private void extractNGrams(List<String> list, String text) {
-        NGram ngram = new NGram();
+    /**
+     * Convert the text to a list of ngrams of length 1 to NGram.N_GRAM (unseen ngrams are omitted). 
+     */
+    private List<String> extractNGrams(String text) {
+        List<String> ngrams = new ArrayList<>();
+        NGram ngramGenerator = new NGram();
         for (int i = 0; i < text.length(); ++i) {
-            ngram.addChar(text.charAt(i));
+            ngramGenerator.addChar(text.charAt(i));
             for (int n = 1; n <= NGram.N_GRAM; ++n) {
-                String w = ngram.get(n);
-                if (w != null && wordLangProbMap.containsKey(w)) {
-                    list.add(w);
+                String ngram = ngramGenerator.get(n);
+                if (ngram != null && wordLangProbMap.containsKey(ngram)) {
+                    ngrams.add(ngram);
                 }
             }
         }
+        return ngrams;
     }
 
-    private boolean updateLangProb(double[] prob, String word, double alpha) {
-        if (word == null || !wordLangProbMap.containsKey(word)) {
-            return false;
+    /**
+     * Normalize the array of probabilities so that they sum to one, returning the maximum normalized value.
+     */
+    private double normalizeProbabilities(double[] probs) {
+        double max = 0;
+        double sum = 0;
+        for (double prob : probs) {
+            sum += prob;
         }
-        double[] langProbMap = wordLangProbMap.get(word);
-        double weight = alpha / base_freq;
-        for (int i = 0; i < prob.length; ++i) {
-            prob[i] *= weight + langProbMap[i];
-        }
-        return true;
-    }
-
-    private double normalizeProb(double[] prob) {
-        double maxp = 0, sump = 0;
-        for (double aProb : prob) {
-            sump += aProb;
-        }
-        for (int i = 0; i < prob.length; ++i) {
-            double p = prob[i] / sump;
-            if (maxp < p) {
-                maxp = p;
+        for (int i = 0; i < probs.length; ++i) {
+            double p = probs[i] / sum;
+            if (max < p) {
+                max = p;
             }
-            prob[i] = p;
+            probs[i] = p;
         }
-        return maxp;
+        return max;
     }
 
-    private List<Language> sortProbability(List<Language> list, double[] prob) {
-        for (int j = 0; j < prob.length; ++j) {
-            double p = prob[j];
-            if (p > prob_threshold) {
-                for (int i = 0; i <= list.size(); ++i) {
-                    if (i == list.size() || list.get(i).getProbability() < p) {
-                        String code = langlist.get(j);
-                        if (langmap != null && langmap.containsKey(code)) {
-                            code = langmap.get(code);
-                        }
-                        list.add(i, new Language(code, p));
-                        break;
-                    }
-                }
+    /**
+     * Convert the array of probabilities to a list of Langauge objects, sorted in descending order of probability.
+     */
+    private List<Language> convertProbabilitiesToLanguages(double[] probs) {
+        List<Language> languages = new ArrayList<>();
+        for (int j = 0; j < probs.length; ++j) {
+            double p = probs[j];
+            if (p > probThreshold) {
+                String code = langlist.get(j);
+                languages.add(new Language(langmap != null && langmap.containsKey(code) ? langmap.get(code) : code, p));
             }
         }
-        return list;
+        Collections.sort(languages, new Comparator<Language>() {
+            @Override
+            public int compare(Language l1, Language l2) {
+                return Double.compare(l2.getProbability(), l1.getProbability());
+            }
+        });
+        return languages;
     }
 }
