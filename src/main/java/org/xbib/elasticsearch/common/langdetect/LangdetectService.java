@@ -236,13 +236,27 @@ public class LangdetectService {
             double[] trialProbs = new double[langlist.size()];
             Arrays.fill(trialProbs, 1.0 / langlist.size());
             double weight = (alpha + rand.nextGaussian() * alphaWidth) / baseFreq;
-            for (int i = 0; ; ++i) {
-                double[] langProbMap = wordLangProbMap.get(ngrams.get(rand.nextInt(ngrams.size())));
-                for (int j = 0; j < trialProbs.length; ++j) {
-                    trialProbs[j] *= weight + langProbMap[j];
+            if (Objects.equals(settings.get("experimentName"), "no-ngram-subsampling")) {
+                for (int i = 0; i < ngrams.size(); i++) {
+                    double[] langProbMap = wordLangProbMap.get(ngrams.get(i));
+                    for (int j = 0; j < trialProbs.length; ++j) {
+                        trialProbs[j] *= weight + langProbMap[j];
+                    }
+                    // Normalize every few iterations to avoid over/underflow
+                    if (i % 5 == 0) {
+                        normalizeProbabilities(trialProbs);
+                    }
                 }
-                if (i % 5 == 0 && (normalizeProbabilities(trialProbs) > convThreshold || i >= iterationLimit)) {
-                    break;
+                normalizeProbabilities(trialProbs);
+            } else {
+                for (int i = 0; ; ++i) {
+                    double[] langProbMap = wordLangProbMap.get(ngrams.get(rand.nextInt(ngrams.size())));
+                    for (int j = 0; j < trialProbs.length; ++j) {
+                        trialProbs[j] *= weight + langProbMap[j];
+                    }
+                    if (i % 5 == 0 && (normalizeProbabilities(trialProbs) > convThreshold || i >= iterationLimit)) {
+                        break;
+                    }
                 }
             }
             for (int j = 0; j < overallProbs.length; ++j) {

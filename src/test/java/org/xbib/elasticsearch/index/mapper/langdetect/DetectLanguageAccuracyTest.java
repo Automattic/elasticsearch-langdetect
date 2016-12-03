@@ -127,6 +127,7 @@ public class DetectLanguageAccuracyTest extends Assert {
             Settings.builder()
                     .put("languages", languageSetting)
                     .put("profile", useShortProfile ? "short-text" : "")
+                    .put("experimentName", System.getProperty("experiment.name"))
                     .build()
         );
         Map<String, List<String>> languageToFullTexts = multiLanguageDatasets.get(datasetName);
