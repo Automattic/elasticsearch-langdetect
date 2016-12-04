@@ -130,8 +130,9 @@ public class DetectLanguageAccuracyTest extends Assert {
         String experimentName = System.getProperty("experiment.name");
         if (experimentName != null && experimentName.startsWith("profile-")) {
             profile = experimentName.split("-", 2)[1];
-            // No point running experiments on all languages or on the short profile 
-            if (useAllLanguages || useShortProfile) {
+            // No point running experiments on the short profile. Experiments on the full union of languages are left
+            // for future work.
+            if (useShortProfile || useAllLanguages) {
                 return;
             }
         }

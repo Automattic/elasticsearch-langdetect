@@ -131,11 +131,14 @@ public class LangdetectService {
             if (settings.get("languages") != null) {
                 keys = settings.get("languages").split(",");
             }
-            int index = 0;
+            List<LangProfile> langProfiles = new ArrayList<>();
             for (String key : keys) {
                 if (key != null && !key.isEmpty()) {
-                    addProfile(loadProfileFromResource(key), index++, keys.length);
+                    langProfiles.addAll(loadProfilesFromResource(key));
                 }
+            }
+            for (int i = 0; i < langProfiles.size(); i++) {
+                addProfile(langProfiles.get(i), i, langProfiles.size());
             }
             logger.debug("language detection service installed for {}", langlist);
         } catch (Exception e) {
@@ -167,20 +170,33 @@ public class LangdetectService {
     }
 
     /**
-     * Load a language profile from a resource file.
+     * Load language profiles from resource files for the given language.
      */
-    private LangProfile loadProfileFromResource(String lang) throws IOException {
-        StringBuilder profilePath = new StringBuilder("/langdetect/");
-        if (profileParam != null) {
-            profilePath.append(profileParam).append('/');
+    private List<LangProfile> loadProfilesFromResource(String lang) throws IOException {
+        List<String> profilePaths = new ArrayList<>();
+        if (profileParam == null) {
+            profilePaths.add("/langdetect/" + lang);
+        } else {
+            for (String prof : profileParam.split(",")) {
+                profilePaths.add("/langdetect/" + prof + "/" + lang);
+            }
         }
-        InputStream in = getClass().getResourceAsStream(profilePath.append(lang).toString());
-        if (in == null) {
-            throw new IOException("profile '" + lang + "' not found");
+        List<LangProfile> langProfiles = new ArrayList<>();
+        for (String profilePath : profilePaths) {
+            InputStream in = getClass().getResourceAsStream(profilePath);
+            if (in == null) {
+                if (profilePaths.size() == 1) {
+                    throw new IOException("profile '" + lang + "' not found");
+                } else {
+                    logger.warn("profile '" + lang + "' not found in path " + profilePath);
+                    continue;
+                }
+            }
+            LangProfile langProfile = new LangProfile();
+            langProfile.read(in);
+            langProfiles.add(langProfile);
         }
-        LangProfile langProfile = new LangProfile();
-        langProfile.read(in);
-        return langProfile;
+        return langProfiles;
     }
 
     /**
@@ -191,9 +207,6 @@ public class LangdetectService {
      */
     public void addProfile(LangProfile profile, int profileIndex, int numLanguages) throws IOException {
         String lang = profile.getName();
-        if (langlist.contains(lang)) {
-            throw new IOException("duplicate of the same language profile: " + lang);
-        }
         langlist.add(lang);
         List<Integer> profileNWords = profile.getNWords();
         for (Map.Entry<String, Integer> entry : profile.getFreq().entrySet()) {
