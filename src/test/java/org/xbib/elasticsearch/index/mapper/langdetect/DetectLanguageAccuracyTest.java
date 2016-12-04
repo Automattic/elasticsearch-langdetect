@@ -123,11 +123,23 @@ public class DetectLanguageAccuracyTest extends Assert {
         if (useAllLanguages) {
             languageSetting = useShortProfile ? ALL_SHORT_PROFILE_LANGUAGES : ALL_DEFAULT_PROFILE_LANGUAGES;
         }
+        String profile = "";
+        if (useShortProfile) {
+            profile = "short-text";
+        }
+        String experimentName = System.getProperty("experiment.name");
+        if (experimentName != null && experimentName.startsWith("profile-")) {
+            profile = experimentName.split("-", 2)[1];
+            // No point running experiments on all languages or on the short profile 
+            if (useAllLanguages || useShortProfile) {
+                return;
+            }
+        }
         LangdetectService service = new LangdetectService(
             Settings.builder()
                     .put("languages", languageSetting)
-                    .put("profile", useShortProfile ? "short-text" : "")
-                    .put("experimentName", System.getProperty("experiment.name"))
+                    .put("profile", profile)
+                    .put("experimentName", experimentName)
                     .build()
         );
         Map<String, List<String>> languageToFullTexts = multiLanguageDatasets.get(datasetName);
