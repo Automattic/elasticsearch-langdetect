@@ -10,6 +10,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.xbib.elasticsearch.common.langdetect.LangdetectService;
+import org.xbib.elasticsearch.common.langdetect.Language;
+import org.xbib.elasticsearch.common.langdetect.LanguageDetectionException;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -23,6 +25,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -136,13 +139,10 @@ public class DetectLanguageAccuracyTest extends Assert {
                 return;
             }
         }
-        LangdetectService service = new LangdetectService(
-            Settings.builder()
-                    .put("languages", languageSetting)
-                    .put("profile", profile)
-                    .put("experimentName", experimentName)
-                    .build()
-        );
+        if (Objects.equals(experimentName, "ensemble-profiles") && (useShortProfile || useAllLanguages)) {
+            return;
+        }
+        LangdetectService service = createService(languageSetting, profile, experimentName);
         Map<String, List<String>> languageToFullTexts = multiLanguageDatasets.get(datasetName);
         Set<String> testedLanguages = new TreeSet<>(languageToFullTexts.keySet());
         testedLanguages.retainAll(Arrays.asList(service.getSettings().getAsArray("languages")));
@@ -285,5 +285,42 @@ public class DetectLanguageAccuracyTest extends Assert {
             }
         }
         return sample;
+    }
+
+    private LangdetectService createService(String languageSetting, String profile, String experimentName) {
+        Settings.Builder settingsBuilder = Settings.builder().put("languages", languageSetting)
+                                                             .put("profile", profile)
+                                                             .put("experimentName", experimentName);
+        if (!Objects.equals(experimentName, "ensemble-profiles")) {
+            return new LangdetectService(settingsBuilder.build());
+        }
+        settingsBuilder.put("prob_threshold", -1.0);
+        final LangdetectService shortService = new LangdetectService(settingsBuilder.put("profile", "short-text")
+                                                                                    .build());
+        return new LangdetectService(settingsBuilder.put("profile", "").build()) {
+            @Override
+            public List<Language> detectAll(String text) throws LanguageDetectionException {
+                Map<String, Double> shortServiceProbabilities = new HashMap<>();
+                for (Language language : shortService.detectAll(text)) {
+                    shortServiceProbabilities.put(language.getLanguage(), language.getProbability());
+                }
+                List<Language> languages = new ArrayList<>();
+                for (Language language : super.detectAll(text)) {
+                    languages.add(
+                        new Language(
+                            language.getLanguage(),
+                            (language.getProbability() + shortServiceProbabilities.get(language.getLanguage())) / 2
+                        )
+                    );
+                }
+                Collections.sort(languages, new Comparator<Language>() {
+                    @Override
+                    public int compare(Language l1, Language l2) {
+                        return Double.compare(l2.getProbability(), l1.getProbability());
+                    }
+                });
+                return languages;
+            }
+        };
     }
 }
