@@ -57,7 +57,7 @@ public class DetectLanguageAccuracyTest extends Assert {
     private final String datasetName;
     private final int substringLength;
     private final int sampleSize;
-    private final boolean useShortProfile;
+    private final String profileParam;
     private final boolean useAllLanguages;
     private final Map<String, Double> languageToExpectedAccuracy;
 
@@ -72,20 +72,20 @@ public class DetectLanguageAccuracyTest extends Assert {
      * @param datasetName multi-language dataset name, as read in the setup step (see {@link #setUp()})
      * @param substringLength substring length to test (see {@link #generateSubstringSample(String, int, int)})
      * @param sampleSize number of substrings to test (see {@link #generateSubstringSample(String, int, int)})
-     * @param useShortProfile if true, the short text language profile will be used instead of the default profile
+     * @param profileParam profile name parameter to pass to the detection service 
      * @param useAllLanguages if true, all supported languages will be used instead of  just the default ones
      * @param languageToExpectedAccuracy mapping from language code to expected accuracy 
      */
     public DetectLanguageAccuracyTest(String datasetName,
                                       int substringLength,
                                       int sampleSize,
-                                      boolean useShortProfile,
+                                      String profileParam,
                                       boolean useAllLanguages,
                                       Map<String, Double> languageToExpectedAccuracy) {
         this.datasetName = datasetName;
         this.substringLength = substringLength;
         this.sampleSize = sampleSize;
-        this.useShortProfile = useShortProfile;
+        this.profileParam = profileParam;
         this.useAllLanguages = useAllLanguages;
         this.languageToExpectedAccuracy = languageToExpectedAccuracy;
     }
@@ -107,7 +107,7 @@ public class DetectLanguageAccuracyTest extends Assert {
             // Write column headers
             Files.write(
                 outputPath,
-                Collections.singletonList("datasetName,substringLength,sampleSize,useShortProfile,useAllLanguages," +
+                Collections.singletonList("datasetName,substringLength,sampleSize,profileParam,useAllLanguages," +
                                           ALL_LANGUAGES),
                 StandardCharsets.UTF_8
             );
@@ -124,25 +124,30 @@ public class DetectLanguageAccuracyTest extends Assert {
         // Set up the detection service according to the test's parameters
         String languageSetting = DEFAULT_LANGUAGES;
         if (useAllLanguages) {
-            languageSetting = useShortProfile ? ALL_SHORT_PROFILE_LANGUAGES : ALL_DEFAULT_PROFILE_LANGUAGES;
+            // TODO: This is a bit clunky. LangdetectService should support "all" as a language setting.
+            if (profileParam.isEmpty()) {
+                languageSetting = ALL_DEFAULT_PROFILE_LANGUAGES;
+            } else if (profileParam.equals("short-text")) {
+                languageSetting = ALL_SHORT_PROFILE_LANGUAGES;
+            } else {
+                assertEquals(profileParam, "merged-average");
+                languageSetting = ALL_LANGUAGES;
+            }
         }
-        String profile = "";
-        if (useShortProfile) {
-            profile = "short-text";
-        }
+        String profileOverride = profileParam;
         String experimentName = System.getProperty("experiment.name");
         if (experimentName != null && experimentName.startsWith("profile-")) {
-            profile = experimentName.split("-", 2)[1];
-            // No point running experiments on the short profile. Experiments on the full union of languages are left
-            // for future work.
-            if (useShortProfile || useAllLanguages) {
+            profileOverride = experimentName.split("-", 2)[1];
+            // No point running experiments on the non-default profile. Experiments on the full union of languages are
+            // left for future work.
+            if (!profileParam.isEmpty() || useAllLanguages) {
                 return;
             }
         }
-        if (Objects.equals(experimentName, "ensemble-profiles") && (useShortProfile || useAllLanguages)) {
+        if (Objects.equals(experimentName, "ensemble-profiles") && (!profileParam.isEmpty() || useAllLanguages)) {
             return;
         }
-        LangdetectService service = createService(languageSetting, profile, experimentName);
+        LangdetectService service = createService(languageSetting, profileOverride, experimentName);
         Map<String, List<String>> languageToFullTexts = multiLanguageDatasets.get(datasetName);
         Set<String> testedLanguages = new TreeSet<>(languageToFullTexts.keySet());
         testedLanguages.retainAll(Arrays.asList(service.getSettings().getAsArray("languages")));
@@ -173,7 +178,7 @@ public class DetectLanguageAccuracyTest extends Assert {
             }
         } else {
             List<Object> row = new ArrayList<>();
-            Collections.addAll(row, datasetName, substringLength, sampleSize, useShortProfile, useAllLanguages);
+            Collections.addAll(row, datasetName, substringLength, sampleSize, profileParam, useAllLanguages);
             for (String language : ALL_LANGUAGES.split(",")) {
                 row.add(languageToAccuracy.containsKey(language) ? languageToAccuracy.get(language) : Double.NaN);
             }
@@ -189,7 +194,7 @@ public class DetectLanguageAccuracyTest extends Assert {
      *
      * @return the parsed parameters
      */
-    @Parameterized.Parameters(name="{0}: substringLength={1} sampleSize={2} useShortProfile={3} useAllLanguages={4}")
+    @Parameterized.Parameters(name="{0}: substringLength={1} sampleSize={2} profileParam={3} useAllLanguages={4}")
     public static Collection<Object[]> data() throws IOException {
         List<Object[]> data = new ArrayList<>();
         try (BufferedReader br = getResourceReader("accuracies.csv")) {
@@ -205,8 +210,8 @@ public class DetectLanguageAccuracyTest extends Assert {
                     scanner.nextInt(),
                     // sampleSize
                     scanner.nextInt(),
-                    // useShortProfile
-                    scanner.nextBoolean(),
+                    // profileParam
+                    scanner.next(),
                     // useAllLanguages
                     scanner.nextBoolean(),
                     // languageToExpectedAccuracy
@@ -287,9 +292,9 @@ public class DetectLanguageAccuracyTest extends Assert {
         return sample;
     }
 
-    private LangdetectService createService(String languageSetting, String profile, String experimentName) {
+    private LangdetectService createService(String languageSetting, String profileOverride, String experimentName) {
         Settings.Builder settingsBuilder = Settings.builder().put("languages", languageSetting)
-                                                             .put("profile", profile)
+                                                             .put("profile", profileOverride)
                                                              .put("experimentName", experimentName);
         if (!Objects.equals(experimentName, "ensemble-profiles")) {
             return new LangdetectService(settingsBuilder.build());

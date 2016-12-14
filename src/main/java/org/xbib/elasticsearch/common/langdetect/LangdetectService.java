@@ -192,9 +192,7 @@ public class LangdetectService {
                     continue;
                 }
             }
-            LangProfile langProfile = new LangProfile();
-            langProfile.read(in);
-            langProfiles.add(langProfile);
+            langProfiles.add(new LangProfile(in));
         }
         return langProfiles;
     }
@@ -208,8 +206,8 @@ public class LangdetectService {
     public void addProfile(LangProfile profile, int profileIndex, int numLanguages) throws IOException {
         String lang = profile.getName();
         langlist.add(lang);
-        List<Integer> profileNWords = profile.getNWords();
-        for (Map.Entry<String, Integer> entry : profile.getFreq().entrySet()) {
+        List<Long> profileNWords = profile.getNWords();
+        for (Map.Entry<String, Long> entry : profile.getFreq().entrySet()) {
             String word = entry.getKey();
             int len = word.length();
             if (len < 1 || len > NGram.N_GRAM) {
@@ -226,6 +224,7 @@ public class LangdetectService {
      * Detect the languages in the text, returning a list of languages sorted in descending order of probability.
      */
     public List<Language> detectAll(String text) throws LanguageDetectionException {
+        text = NGram.normalizeVietnamese(text);
         if (filterPattern != null && !filterPattern.matcher(text).matches()) {
             return Collections.emptyList();
         }
