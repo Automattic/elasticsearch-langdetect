@@ -79,6 +79,7 @@ public class LangdetectService {
     private final double convThreshold;
     private final int baseFreq;
     private final Pattern filterPattern;
+    private final boolean extractOneSkipBigrams;
 
     /**
      * Create a service with the default settings.
@@ -99,7 +100,8 @@ public class LangdetectService {
      */
     public LangdetectService(Settings settings, String profileParam) {
         this.settings = settings;
-        this.profileParam = settings.get("profile", profileParam) ;
+        this.profileParam = settings.get("profile", profileParam);
+        this.extractOneSkipBigrams = Objects.equals(settings.get("experimentName"), "one-skip-bigrams");
         load(settings);
         this.numTrials = settings.getAsInt("number_of_trials", 7);
         this.alpha = settings.getAsDouble("alpha", 0.5);
@@ -207,8 +209,11 @@ public class LangdetectService {
         String lang = profile.getName();
         langlist.add(lang);
         List<Long> profileNWords = profile.getNWords();
+        Map<String, Long> oneSkipBigramFreqs = new HashMap<>();
+        long oneSkipBigramNWords = 0;
         for (Map.Entry<String, Long> entry : profile.getFreq().entrySet()) {
             String word = entry.getKey();
+            Long wordCount = entry.getValue();
             int len = word.length();
             if (len < 1 || len > NGram.N_GRAM) {
                 continue;
@@ -216,7 +221,25 @@ public class LangdetectService {
             if (!wordLangProbMap.containsKey(word)) {
                 wordLangProbMap.put(word, new double[numLanguages]);
             }
-            wordLangProbMap.get(word)[profileIndex] = entry.getValue().doubleValue() / profileNWords.get(len - 1);
+            wordLangProbMap.get(word)[profileIndex] = wordCount.doubleValue() / profileNWords.get(len - 1);
+            if (extractOneSkipBigrams && len == 3) {
+                String oneSkipBigram = "1sb:" + word.charAt(0) + word.charAt(2);
+                oneSkipBigramNWords += wordCount;
+                if (oneSkipBigramFreqs.containsKey(oneSkipBigram)) {
+                    oneSkipBigramFreqs.put(oneSkipBigram, oneSkipBigramFreqs.get(oneSkipBigram) + wordCount);
+                } else {
+                    oneSkipBigramFreqs.put(oneSkipBigram, wordCount);
+                }
+            }
+        }
+        if (extractOneSkipBigrams) {
+            for (Map.Entry<String, Long> entry : oneSkipBigramFreqs.entrySet()) {
+                String oneSkipBigram = entry.getKey();
+                if (!wordLangProbMap.containsKey(oneSkipBigram)) {
+                    wordLangProbMap.put(oneSkipBigram, new double[numLanguages]);
+                }
+                wordLangProbMap.get(oneSkipBigram)[profileIndex] = entry.getValue().doubleValue() / oneSkipBigramNWords;
+            }
         }
     }
 
@@ -288,8 +311,17 @@ public class LangdetectService {
             ngramGenerator.addChar(text.charAt(i));
             for (int n = 1; n <= NGram.N_GRAM; ++n) {
                 String ngram = ngramGenerator.get(n);
-                if (ngram != null && wordLangProbMap.containsKey(ngram)) {
+                if (ngram == null) {
+                    continue;
+                }
+                if (wordLangProbMap.containsKey(ngram)) {
                     ngrams.add(ngram);
+                }
+                if (extractOneSkipBigrams && ngram.length() == 3) {
+                    String oneSkipBigram = "1sb:" + ngram.charAt(0) + ngram.charAt(2);
+                    if (wordLangProbMap.containsKey(oneSkipBigram)) {
+                        ngrams.add(oneSkipBigram);
+                    }
                 }
             }
         }
