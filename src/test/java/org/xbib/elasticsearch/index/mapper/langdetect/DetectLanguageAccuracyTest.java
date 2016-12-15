@@ -147,6 +147,10 @@ public class DetectLanguageAccuracyTest extends Assert {
         if (Objects.equals(experimentName, "ensemble-profiles") && (!profileParam.isEmpty() || useAllLanguages)) {
             return;
         }
+        if (("one-skip-bigrams".equals(experimentName) || "lowercase".equals(experimentName)) &&
+                (!profileParam.equals("merged-average") || !useAllLanguages)) {
+            return;
+        }
         LangdetectService service = createService(languageSetting, profileOverride, experimentName);
         Map<String, List<String>> languageToFullTexts = multiLanguageDatasets.get(datasetName);
         Set<String> testedLanguages = new TreeSet<>(languageToFullTexts.keySet());

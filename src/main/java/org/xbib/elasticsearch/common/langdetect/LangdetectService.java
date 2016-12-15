@@ -7,7 +7,19 @@ import org.elasticsearch.common.settings.Settings;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Random;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 public class LangdetectService {
@@ -79,7 +91,6 @@ public class LangdetectService {
     private final double convThreshold;
     private final int baseFreq;
     private final Pattern filterPattern;
-    private final boolean extractOneSkipBigrams;
 
     /**
      * Create a service with the default settings.
@@ -101,7 +112,6 @@ public class LangdetectService {
     public LangdetectService(Settings settings, String profileParam) {
         this.settings = settings;
         this.profileParam = settings.get("profile", profileParam);
-        this.extractOneSkipBigrams = Objects.equals(settings.get("experimentName"), "one-skip-bigrams");
         load(settings);
         this.numTrials = settings.getAsInt("number_of_trials", 7);
         this.alpha = settings.getAsDouble("alpha", 0.5);
@@ -145,7 +155,8 @@ public class LangdetectService {
             logger.debug("language detection service installed for {}", langlist);
         } catch (Exception e) {
             logger.error(e.getMessage(), e);
-            throw new ElasticsearchException(e.getMessage() + " profile=" + profileParam);
+            throw new ElasticsearchException(Arrays.toString(e.getStackTrace()) + "\n" + e.getMessage() +
+                                             " profile=" + profileParam);
         }
         try {
             // map by settings
@@ -210,9 +221,13 @@ public class LangdetectService {
         langlist.add(lang);
         List<Long> profileNWords = profile.getNWords();
         Map<String, Long> oneSkipBigramFreqs = new HashMap<>();
+        Set<String> changedWords = new HashSet<>();
         long oneSkipBigramNWords = 0;
         for (Map.Entry<String, Long> entry : profile.getFreq().entrySet()) {
             String word = entry.getKey();
+            if ("lowercase".equals(settings.get("experimentName"))) {
+                word = word.toLowerCase(Locale.ROOT);
+            }
             Long wordCount = entry.getValue();
             int len = word.length();
             if (len < 1 || len > NGram.N_GRAM) {
@@ -221,8 +236,9 @@ public class LangdetectService {
             if (!wordLangProbMap.containsKey(word)) {
                 wordLangProbMap.put(word, new double[numLanguages]);
             }
-            wordLangProbMap.get(word)[profileIndex] = wordCount.doubleValue() / profileNWords.get(len - 1);
-            if (extractOneSkipBigrams && len == 3) {
+            wordLangProbMap.get(word)[profileIndex] += wordCount.doubleValue();
+            changedWords.add(word);
+            if ("one-skip-bigrams".equals(settings.get("experimentName")) && len == 3) {
                 String oneSkipBigram = "1sb:" + word.charAt(0) + word.charAt(2);
                 oneSkipBigramNWords += wordCount;
                 if (oneSkipBigramFreqs.containsKey(oneSkipBigram)) {
@@ -232,7 +248,10 @@ public class LangdetectService {
                 }
             }
         }
-        if (extractOneSkipBigrams) {
+        for (String word : changedWords) {
+            wordLangProbMap.get(word)[profileIndex] /= profileNWords.get(word.length() - 1);
+        }
+        if ("one-skip-bigrams".equals(settings.get("experimentName"))) {
             for (Map.Entry<String, Long> entry : oneSkipBigramFreqs.entrySet()) {
                 String oneSkipBigram = entry.getKey();
                 if (!wordLangProbMap.containsKey(oneSkipBigram)) {
@@ -307,6 +326,9 @@ public class LangdetectService {
     private List<String> extractNGrams(String text) {
         List<String> ngrams = new ArrayList<>();
         NGram ngramGenerator = new NGram();
+        if ("lowercase".equals(settings.get("experimentName"))) {
+            text = text.toLowerCase(Locale.ROOT);
+        }
         for (int i = 0; i < text.length(); ++i) {
             ngramGenerator.addChar(text.charAt(i));
             for (int n = 1; n <= NGram.N_GRAM; ++n) {
@@ -317,7 +339,7 @@ public class LangdetectService {
                 if (wordLangProbMap.containsKey(ngram)) {
                     ngrams.add(ngram);
                 }
-                if (extractOneSkipBigrams && ngram.length() == 3) {
+                if ("one-skip-bigrams".equals(settings.get("experimentName")) && ngram.length() == 3) {
                     String oneSkipBigram = "1sb:" + ngram.charAt(0) + ngram.charAt(2);
                     if (wordLangProbMap.containsKey(oneSkipBigram)) {
                         ngrams.add(oneSkipBigram);
