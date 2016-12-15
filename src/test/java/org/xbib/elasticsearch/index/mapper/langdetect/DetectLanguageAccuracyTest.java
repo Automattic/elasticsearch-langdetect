@@ -147,8 +147,10 @@ public class DetectLanguageAccuracyTest extends Assert {
         if (Objects.equals(experimentName, "ensemble-profiles") && (!profileParam.isEmpty() || useAllLanguages)) {
             return;
         }
-        if (("one-skip-bigrams".equals(experimentName) || "lowercase".equals(experimentName)) &&
-                (!profileParam.equals("merged-average") || !useAllLanguages)) {
+        if (("one-skip-bigrams".equals(experimentName) ||
+             "lowercase".equals(experimentName) ||
+             "ensemble-lowercase".equals(experimentName)) &&
+            (!profileParam.equals("merged-average") || !useAllLanguages)) {
             return;
         }
         LangdetectService service = createService(languageSetting, profileOverride, experimentName);
@@ -300,25 +302,33 @@ public class DetectLanguageAccuracyTest extends Assert {
         Settings.Builder settingsBuilder = Settings.builder().put("languages", languageSetting)
                                                              .put("profile", profileOverride)
                                                              .put("experimentName", experimentName);
-        if (!Objects.equals(experimentName, "ensemble-profiles")) {
+        if (!"ensemble-profiles".equals(experimentName) && !"ensemble-lowercase".equals(experimentName)) {
             return new LangdetectService(settingsBuilder.build());
         }
         settingsBuilder.put("prob_threshold", -1.0);
-        final LangdetectService shortService = new LangdetectService(settingsBuilder.put("profile", "short-text")
-                                                                                    .build());
-        return new LangdetectService(settingsBuilder.put("profile", "").build()) {
+        Settings mainSettings;
+        Settings otherSettings;
+        if ("ensemble-profiles".equals(experimentName)) {
+            mainSettings = settingsBuilder.put("profile", "").build();
+            otherSettings = settingsBuilder.put("profile", "short-text").build();
+        } else {
+            mainSettings = settingsBuilder.put("experimentName", "").build();
+            otherSettings = settingsBuilder.put("experimentName", "lowercase").build();
+        }
+        final LangdetectService otherService = new LangdetectService(otherSettings);
+        return new LangdetectService(mainSettings) {
             @Override
             public List<Language> detectAll(String text) throws LanguageDetectionException {
-                Map<String, Double> shortServiceProbabilities = new HashMap<>();
-                for (Language language : shortService.detectAll(text)) {
-                    shortServiceProbabilities.put(language.getLanguage(), language.getProbability());
+                Map<String, Double> otherServiceProbabilities = new HashMap<>();
+                for (Language language : otherService.detectAll(text)) {
+                    otherServiceProbabilities.put(language.getLanguage(), language.getProbability());
                 }
                 List<Language> languages = new ArrayList<>();
                 for (Language language : super.detectAll(text)) {
                     languages.add(
                         new Language(
                             language.getLanguage(),
-                            (language.getProbability() + shortServiceProbabilities.get(language.getLanguage())) / 2
+                            (language.getProbability() + otherServiceProbabilities.get(language.getLanguage())) / 2
                         )
                     );
                 }
