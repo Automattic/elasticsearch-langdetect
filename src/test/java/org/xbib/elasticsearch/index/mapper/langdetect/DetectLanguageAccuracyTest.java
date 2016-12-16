@@ -27,6 +27,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -50,6 +51,9 @@ public class DetectLanguageAccuracyTest extends Assert {
     private static final String ALL_SHORT_PROFILE_LANGUAGES =
         "ar,bg,bn,ca,cs,da,de,el,en,es,et,fa,fi,fr,gu,he,hi,hr,hu,id,it,ja,ko,lt,lv,mk,ml,nl,no,pa,pl,pt,ro,ru,si,sq," +
             "sv,ta,te,th,tl,tr,uk,ur,vi,zh-cn,zh-tw";
+    private static final Set<String> MERGED_AVERAGE_ONLY_EXPERIMENTS = new HashSet<>(
+        Arrays.asList("one-skip-bigrams", "lowercase", "ensemble-lowercase", "confusion-matrix")
+    );
 
     private static Map<String, Map<String, List<String>>> multiLanguageDatasets;
     private static Path outputPath;
@@ -107,8 +111,11 @@ public class DetectLanguageAccuracyTest extends Assert {
             // Write column headers
             Files.write(
                 outputPath,
-                Collections.singletonList("datasetName,substringLength,sampleSize,profileParam,useAllLanguages," +
-                                          ALL_LANGUAGES),
+                Collections.singletonList(
+                    "datasetName,substringLength,sampleSize,profileParam,useAllLanguages," +
+                    ("confusion-matrix".equals(System.getProperty("experiment.name")) ? "actual,null," : "") +
+                    ALL_LANGUAGES
+                ),
                 StandardCharsets.UTF_8
             );
         }
@@ -147,9 +154,7 @@ public class DetectLanguageAccuracyTest extends Assert {
         if (Objects.equals(experimentName, "ensemble-profiles") && (!profileParam.isEmpty() || useAllLanguages)) {
             return;
         }
-        if (("one-skip-bigrams".equals(experimentName) ||
-             "lowercase".equals(experimentName) ||
-             "ensemble-lowercase".equals(experimentName)) &&
+        if (MERGED_AVERAGE_ONLY_EXPERIMENTS.contains(experimentName) &&
             (!profileParam.equals("merged-average") || !useAllLanguages)) {
             return;
         }
@@ -161,18 +166,42 @@ public class DetectLanguageAccuracyTest extends Assert {
         // Classify the texts and calculate the accuracy for each language 
         Map<String, Double> languageToAccuracy = new HashMap<>(testedLanguages.size());
         for (String language : testedLanguages) {
+            Map<String, Integer> predictedLanguageCounts = new HashMap<>();
             double numCorrect = 0;
             List<String> fullTexts = languageToFullTexts.get(language);
             for (String text : fullTexts) {
                 for (String substring : generateSubstringSample(text, substringLength, sampleSize)) {
-                    if (Objects.equals(DetectLanguageTest.getTopLanguageCode(service, substring), language)) {
+                    String predictedLanguage = DetectLanguageTest.getTopLanguageCode(service, substring);
+                    if (Objects.equals(predictedLanguage, language)) {
                         numCorrect++;
+                    }
+                    if ("confusion-matrix".equals(experimentName)) {
+                        if (predictedLanguageCounts.containsKey(predictedLanguage)) {
+                            predictedLanguageCounts.put(predictedLanguage,
+                                                        predictedLanguageCounts.get(predictedLanguage) + 1);
+                        } else {
+                            predictedLanguageCounts.put(predictedLanguage, 1);
+                        }
                     }
                 }
             }
             double accuracy = numCorrect / (fullTexts.size() * sampleSize);
             languageToAccuracy.put(language, accuracy);
             logger.debug("Language: {} Accuracy: {}", language, accuracy);
+            if ("confusion-matrix".equals(experimentName)) {
+                List<Object> row = new ArrayList<>();
+                Collections.addAll(row, datasetName, substringLength, sampleSize, profileParam, useAllLanguages,
+                                   language);
+                row.add(predictedLanguageCounts.containsKey(null) ? predictedLanguageCounts.get(null) : 0);
+                for (String predictedLanguage : ALL_LANGUAGES.split(",")) {
+                    row.add(predictedLanguageCounts.containsKey(predictedLanguage) ?
+                            predictedLanguageCounts.get(predictedLanguage) : 0);
+                }
+                Files.write(outputPath,
+                            Collections.singletonList(Joiner.on(",").join(row)),
+                            StandardCharsets.UTF_8,
+                            StandardOpenOption.APPEND);
+            }
         }
 
         // If no output file is given, compare the obtained accuracies to the expected values. Otherwise, write the
@@ -182,7 +211,7 @@ public class DetectLanguageAccuracyTest extends Assert {
             for (Map.Entry<String, Double> entry : languageToAccuracy.entrySet()) {
                 assertEquals(languageToExpectedAccuracy.get(entry.getKey()), entry.getValue(), ACCURACY_DELTA);
             }
-        } else {
+        } else if (!"confusion-matrix".equals(experimentName)) {
             List<Object> row = new ArrayList<>();
             Collections.addAll(row, datasetName, substringLength, sampleSize, profileParam, useAllLanguages);
             for (String language : ALL_LANGUAGES.split(",")) {
