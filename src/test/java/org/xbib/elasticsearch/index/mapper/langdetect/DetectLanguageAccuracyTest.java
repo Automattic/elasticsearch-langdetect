@@ -52,7 +52,7 @@ public class DetectLanguageAccuracyTest extends Assert {
         "ar,bg,bn,ca,cs,da,de,el,en,es,et,fa,fi,fr,gu,he,hi,hr,hu,id,it,ja,ko,lt,lv,mk,ml,nl,no,pa,pl,pt,ro,ru,si,sq," +
             "sv,ta,te,th,tl,tr,uk,ur,vi,zh-cn,zh-tw";
     private static final Set<String> MERGED_AVERAGE_ONLY_EXPERIMENTS = new HashSet<>(
-        Arrays.asList("one-skip-bigrams", "lowercase", "ensemble-lowercase", "confusion-matrix")
+        Arrays.asList("one-skip-bigrams", "lowercase", "ensemble-lowercase", "confusion-matrix", "ensemble-confused")
     );
 
     private static Map<String, Map<String, List<String>>> multiLanguageDatasets;
@@ -327,22 +327,68 @@ public class DetectLanguageAccuracyTest extends Assert {
         return sample;
     }
 
-    private LangdetectService createService(String languageSetting, String profileOverride, String experimentName) {
+    private LangdetectService createService(String languageSetting,
+                                            String profileOverride,
+                                            final String experimentName) {
         Settings.Builder settingsBuilder = Settings.builder().put("languages", languageSetting)
                                                              .put("profile", profileOverride)
                                                              .put("experimentName", experimentName);
-        if (!"ensemble-profiles".equals(experimentName) && !"ensemble-lowercase".equals(experimentName)) {
+        if (!Arrays.asList("ensemble-profiles", "ensemble-lowercase", "ensemble-confused").contains(experimentName)) {
             return new LangdetectService(settingsBuilder.build());
         }
+
+        if ("ensemble-confused".equals(experimentName)) {
+            Settings mainSettings = settingsBuilder.build();
+            final Map<String, LangdetectService> languageSpecificServices = new HashMap<>();
+            String[] languageSpecificSettings = {
+                "af,de,nl",
+                "ar,fa,ur",
+                "bg,mk,ru,uk",
+                "ca,es,fr,pt,it",
+                "cs,sk",
+                "da,no,sv",
+                "et,fi",
+                "hi,ne,mr",
+                "hr,sl",
+                "id,tl",
+                "lt,lv",
+                "zh-cn,zh-tw"
+            };
+            for (String languageSpecificSetting : languageSpecificSettings) {
+                LangdetectService languageSpecificService =
+                    new LangdetectService(settingsBuilder.put("languages", languageSpecificSetting).build());
+                for (String langauge : languageSpecificSetting.split(",")) {
+                    assert !languageSpecificServices.containsKey(langauge);
+                    languageSpecificServices.put(langauge, languageSpecificService);
+                }
+            }
+            return new LangdetectService(mainSettings) {
+                @Override
+                public List<Language> detectAll(String text) throws LanguageDetectionException {
+                    List<Language> languages = super.detectAll(text);
+                    if (languages.size() == 0) {
+                        return languages;
+                    }
+                    String topMainLanguage = languages.get(0).getLanguage();
+                    if (languageSpecificServices.containsKey(topMainLanguage)) {
+                        return languageSpecificServices.get(topMainLanguage).detectAll(text);
+                    }
+                    return languages;
+                }
+            };
+        }
+
         settingsBuilder.put("prob_threshold", -1.0);
         Settings mainSettings;
         Settings otherSettings;
         if ("ensemble-profiles".equals(experimentName)) {
             mainSettings = settingsBuilder.put("profile", "").build();
             otherSettings = settingsBuilder.put("profile", "short-text").build();
-        } else {
+        } else if ("ensemble-lowercase".equals(experimentName)) {
             mainSettings = settingsBuilder.put("experimentName", "").build();
             otherSettings = settingsBuilder.put("experimentName", "lowercase").build();
+        } else {
+            throw new AssertionError("Unsupported ensemble experiment: " + experimentName);
         }
         final LangdetectService otherService = new LangdetectService(otherSettings);
         return new LangdetectService(mainSettings) {
