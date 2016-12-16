@@ -52,7 +52,8 @@ public class DetectLanguageAccuracyTest extends Assert {
         "ar,bg,bn,ca,cs,da,de,el,en,es,et,fa,fi,fr,gu,he,hi,hr,hu,id,it,ja,ko,lt,lv,mk,ml,nl,no,pa,pl,pt,ro,ru,si,sq," +
             "sv,ta,te,th,tl,tr,uk,ur,vi,zh-cn,zh-tw";
     private static final Set<String> MERGED_AVERAGE_ONLY_EXPERIMENTS = new HashSet<>(
-        Arrays.asList("one-skip-bigrams", "lowercase", "ensemble-lowercase", "confusion-matrix", "ensemble-confused")
+        Arrays.asList("one-skip-bigrams", "lowercase", "ensemble-lowercase", "confusion-matrix", "ensemble-confused",
+                      "normalizer-nfc")
     );
 
     private static Map<String, Map<String, List<String>>> multiLanguageDatasets;

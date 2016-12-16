@@ -7,6 +7,7 @@ import org.elasticsearch.common.settings.Settings;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -227,6 +228,8 @@ public class LangdetectService {
             String word = entry.getKey();
             if ("lowercase".equals(settings.get("experimentName"))) {
                 word = word.toLowerCase(Locale.ROOT);
+            } else if ("normalizer-nfc".equals(settings.get("experimentName"))) {
+                word = Normalizer.normalize(word, Normalizer.Form.NFC);
             }
             Long wordCount = entry.getValue();
             int len = word.length();
@@ -326,15 +329,17 @@ public class LangdetectService {
     private List<String> extractNGrams(String text) {
         List<String> ngrams = new ArrayList<>();
         NGram ngramGenerator = new NGram();
-        if ("lowercase".equals(settings.get("experimentName"))) {
-            text = text.toLowerCase(Locale.ROOT);
-        }
         for (int i = 0; i < text.length(); ++i) {
             ngramGenerator.addChar(text.charAt(i));
             for (int n = 1; n <= NGram.N_GRAM; ++n) {
                 String ngram = ngramGenerator.get(n);
                 if (ngram == null) {
                     continue;
+                }
+                if ("lowercase".equals(settings.get("experimentName"))) {
+                    ngram = ngram.toLowerCase(Locale.ROOT);
+                } else if ("normalizer-nfc".equals(settings.get("experimentName"))) {
+                    ngram = Normalizer.normalize(ngram, Normalizer.Form.NFC);
                 }
                 if (wordLangProbMap.containsKey(ngram)) {
                     ngrams.add(ngram);
